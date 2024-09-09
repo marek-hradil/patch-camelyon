@@ -1,9 +1,7 @@
-from collections import defaultdict
-
-import torch
 from lightning import LightningModule
 from torch import Tensor, nn
 from torch.optim.optimizer import Optimizer
+from torchmetrics import MetricCollection
 
 from project_name.typing import Input, Outputs
 
@@ -15,9 +13,12 @@ class ProjectNameModel(LightningModule):
         self.decode_head = decode_head
         self.criterion = ...  # TODO add your loss function
 
-        self.metrics = nn.ModuleDict({...})  # TODO add metrics you want to compute
+        self.val_metrics = MetricCollection(
+            {...},  # TODO add metrics you want to compute
+            prefix="validation/",
+        )
 
-        self._validation_step_outputs: dict[str, list[Tensor]] = defaultdict(list)
+        self.test_mterics = self.val_metrics.clone(prefix="test/")
 
     def forward(self, x: Input) -> Outputs:
         features = self.backbone(x)
@@ -37,35 +38,16 @@ class ProjectNameModel(LightningModule):
         outputs = self(inputs)
 
         loss = self.criterion(outputs, targets)
-        self._validation_step_outputs["loss"].append(loss)
+        self.log("validation/loss", loss, on_epoch=True, prog_bar=True)
 
-        for name, metric in self.metrics.items():
-            self._validation_step_outputs[name].append(metric(outputs, targets))
-
-    def on_validation_epoch_end(self) -> None:
-        avg_outputs = {
-            k: torch.stack(v).mean() for k, v in self._validation_step_outputs.items()
-        }
-        self.log_dict(
-            {f"validation/{k}": v for k, v in avg_outputs.items()}, sync_dist=True
-        )
-        self._validation_step_outputs.clear()
+        self.val_metrics.update(outputs, targets)
+        self.log_dict(self.val_metrics, on_epoch=True)
 
     def test_step(self, batch: Input) -> None:
         inputs, targets = batch
         outputs = self(inputs)
-
-        for metric in self.metrics.values():
-            metric(outputs, targets)
-
-    def on_test_epoch_end(self) -> None:
-        self.log_dict(
-            {name: metric.compute() for name, metric in self.metrics.items()},
-            sync_dist=True,
-        )
-
-        for metric in self.metrics.values():
-            metric.reset()
+        self.test_metrics.update(outputs, targets)
+        self.log_dict(self.test_metrics, on_epoch=True)
 
     def configure_optimizers(self) -> Optimizer:
         # TODO add your optimizer
